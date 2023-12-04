@@ -43,13 +43,14 @@ contract StakingContract is Ownable, ReentrancyGuard {
     error PoolEnded();
 
     using SafeMath for uint256;
+    address public feeWallet;
     bool public stakingPaused;
     bool public claimsPaused;
     bool public unstakingPaused;
     uint256 constant SEC_IN_YEAR = 365 * 24 * 60 * 60;
     uint256 constant HUNDERED = 100;
     uint256 constant THOUSAND = 1000;
-    uint256 constant UNSTAKE_FEE = 5; // e.g. 0.5%
+    uint256 public UNSTAKE_FEE = 5;
 
     struct User {
         uint256 stakedAmount;
@@ -61,18 +62,18 @@ contract StakingContract is Ownable, ReentrancyGuard {
     struct Pool {
         string poolName;
         uint256 stakeAPY;
-        address stakingToken; //Can be same as rewarding token
+        address stakingToken; //can be same as rewarding token
         address rewardToken;
         uint256 stakingStartTime;
-        uint256 poolValidityPeriod; //days
+        uint256 poolValidityPeriod; //unixtime-stamp
         bool stakingStarted;
         bool poolExists;
     }
 
     /* ========== STORAGE ========== */
 
-    mapping(address => Pool) public pools; //staking-token => Pool(staking-token)
-    mapping(address => mapping(address => User)) public users; // user => token => userStruct
+    mapping(address => Pool) public pools; //stakingToken => Pool{}
+    mapping(address => mapping(address => User)) public users; // user => token => userStruct{}
 
     /* ========== EVENTS ========== */
 
@@ -132,7 +133,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
         Pool storage pool = pools[token];
 
         pool.stakingStartTime = block.timestamp;
-        pool.poolValidityPeriod += block.timestamp;
+        pool.poolValidityPeriod += block.timestamp; //from the day staking started + validityDays
         pool.stakingStarted = true;
     }
 
@@ -151,12 +152,17 @@ contract StakingContract is Ownable, ReentrancyGuard {
         claimsPaused = false;
     }
 
+    // it will halt all stakings
     function pauseUnstaking() external onlyOwner {
         unstakingPaused = true;
     }
 
     function startUnstaking() external onlyOwner {
         unstakingPaused = false;
+    }
+
+    function setFeeWallet(address _feeWallet) external onlyOwner {
+        feeWallet = _feeWallet;
     }
 
     function stake(
@@ -182,7 +188,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
         users[msg.sender][token].depositTime = block.timestamp;
         users[msg.sender][token].lastClaimTime = block.timestamp;
-        users[msg.sender][token].stakedAmount += amount;
+        users[msg.sender][token].stakedAmount += amount; //previouslyStaked + NewStakedAmount = StakedAmount
 
         emit Staked(msg.sender, token, amount);
     }
@@ -191,7 +197,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
         address user,
         address token
     ) public view returns (uint256) {
-        uint256 rewardPercentage = pools[token].stakeAPY;
+        Pool storage pool = pools[token];
+        if (!pool.poolExists) {
+            revert PoolNotExists();
+        }
+        uint256 rewardPercentage = pool.stakeAPY;
         return
             users[user][token]
                 .stakedAmount
@@ -203,12 +213,10 @@ contract StakingContract is Ownable, ReentrancyGuard {
     function updateRewards(address user, address token) internal {
         uint256 currentTime = block.timestamp;
         uint256 lastClaimTime = users[user][token].lastClaimTime;
-        uint256 elapsedTime = currentTime.sub(lastClaimTime); 
+        uint256 elapsedTime = currentTime.sub(lastClaimTime);
 
-        uint256 rewardPerSecond = calculateRewardPerSecond(user, token);
-        uint256 accumulatedReward = users[user][token].reward.add(
-            rewardPerSecond.mul(elapsedTime)
-        );
+        uint256 rewardPerSecond = calculateRewardPerSecond(user, token); // 0.000000792744799594 * 86400
+        uint256 accumulatedReward = rewardPerSecond.mul(elapsedTime);
 
         users[user][token].reward = accumulatedReward;
         users[user][token].lastClaimTime = currentTime;
@@ -225,10 +233,9 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
         updateRewards(msg.sender, token);
 
-        uint256 reward = users[msg.sender][token].reward;
+        uint256 reward = users[msg.sender][token].reward; //68493943430000000 68493943429721194
         address rewardToken = pool.rewardToken;
 
-        //rewarding token transferable only as reward token
         IERC20(rewardToken).transfer(msg.sender, reward);
 
         emit RewardPaid(msg.sender, token, reward);
@@ -243,8 +250,12 @@ contract StakingContract is Ownable, ReentrancyGuard {
         uint256 validityPeriod = pool.poolValidityPeriod;
 
         if (block.timestamp < validityPeriod) {
-            uint256 fee = stakedAmount.mul(UNSTAKE_FEE).div(THOUSAND); 
+            uint256 fee = stakedAmount.mul(UNSTAKE_FEE).div(THOUSAND); // 5% fee
             stakedAmount = stakedAmount.sub(fee);
+
+            if (feeWallet != address(0)) {
+                IERC20(token).transfer(feeWallet, fee);
+            }
         }
 
         // staked tokens will be transferred here
@@ -255,7 +266,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
         emit UnStaked(msg.sender, token, stakedAmount);
 
-        delete users[msg.sender][token];
+        // delete users[msg.sender][token];
     }
 
     function addPool(
@@ -306,7 +317,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
     }
 
     //cannot be updateable once the staking starts
-    function updatePool(
+    function updatePoolAPY(
         address token,
         uint256 newRewardPercentage
     ) external onlyOwner stakingStarted(token) {
@@ -341,4 +352,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
         return accruedRewards;
     }
 
+    function contractBalance() public view returns (uint256) {
+        return address(this).balance;
+    }
+
+    function feeWalletBalance(address token) public view returns (uint256) {
+        return IERC20(token).balanceOf(feeWallet);
+    }
 }
