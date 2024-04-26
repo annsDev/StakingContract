@@ -2,7 +2,7 @@
 pragma solidity ^0.8.10;
 
 /// @title Staking Contract
-/// @author Quecko Inc.
+/// @author Anns Khalid
 /// @notice Implements the logic for Staking Contract
 /// @dev Allows multiple users to stake tokens on multiple pools
 
